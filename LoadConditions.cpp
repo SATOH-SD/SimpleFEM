@@ -1,5 +1,7 @@
 ﻿#include "PlaneElast.h"
 
+#include "PlaneHeat.h"
+
 
 // Готовы ли данные к заданию условий нагружения
 bool PlaneElast::condReady() const {
@@ -80,13 +82,54 @@ bool PlaneElast::setPointV(vec2 point, double v) {
 }
 
 // Задать перемещения в узле
-//bool PlaneElast::setNodeUV(unsigned nodeId, vec2 uv = { 0., 0. }) {}
+bool PlaneElast::setNodeUV(unsigned nodeId, vec2 uv) {
+	if (!condReady())
+		return false;
+	if (nodeId >= mesh->nodeCount) {
+		std::cerr << "WARNING! There no node with ID " << nodeId << "\n";
+		return false;
+	}
+	unsigned i2 = 2 * nodeId;
+	slae(i2, i2) *= 1e20;
+	slae.b(i2) = slae(i2, i2) * uv.x;
+	slae(i2 + 1, i2 + 1) *= 1e20;
+	slae.b(i2 + 1) = slae(i2 + 1, i2 + 1) * uv.y;
+	std::cout << "Displacement (" << uv.x << ", " << uv.y \
+		<< ") in node " << nodeId << " applied\n";
+	return true;
+}
 
 // Задать горизонтальное перемещение в узле
-//bool PlaneElast::setNodeU(unsigned nodeId, double u = 0.) {}
+bool PlaneElast::setNodeU(unsigned nodeId, double u) {
+	if (!condReady())
+		return false;
+	if (nodeId >= mesh->nodeCount) {
+		std::cerr << "WARNING! There no node with ID " << nodeId << "\n";
+		return false;
+	}
+	unsigned i2 = 2 * nodeId;
+	slae(i2, i2) *= 1e20;
+	slae.b(i2) = slae(i2, i2) * u;
+	std::cout << "Horizontal displacement " << u \
+		<< " in node " << nodeId << " applied\n";
+	return true;
+}
 
 // Задать вертикальное перемещение в узле
-//bool PlaneElast::setNodeV(unsigned nodeId, double v = 0.) {}
+bool PlaneElast::setNodeV(unsigned nodeId, double v) {
+	if (!condReady())
+		return false;
+	if (nodeId >= mesh->nodeCount) {
+		std::cerr << "WARNING! There no node with ID " << nodeId << "\n";
+		return false;
+	}
+	unsigned i2 = 2 * nodeId;
+	slae(i2 + 1, i2 + 1) *= 1e20;
+	slae.b(i2 + 1) = slae(i2 + 1, i2 + 1) * v;
+	std::cout << "Vertical displacement " << v \
+		<< " in node " << nodeId << " applied\n";
+	return true;
+}
 
 
 // Задать перемещения на вертикальной линии
@@ -356,3 +399,52 @@ bool PlaneElast::setHoriLineForce(double y, vec2 force) {
 
 // Задать объёмные силы при вращении вокруг оси
 //void PlaneElast::setRotationAxis(vec2 point, vec2 direction, double omega) {}
+
+
+bool PlaneElast::setTemperature(const PlaneHeat& heat, double T0) {
+	if (heat.mesh != mesh) {
+		std::cerr << "WARNING! Heat and elasticity solvers use different meshes!\n";
+		return false;
+	}
+	setTemperature(heat.T, T0);
+	return true;
+}
+
+void PlaneElast::setTemperature(const double* T, double T0) {
+	PlaneElast::T = T;
+	eps0 = new Tensor2D[mesh->elemCount];
+	for (unsigned e = 0; e < mesh->elemCount; ++e) {
+		unsigned
+			i1 = mesh->elemNodeId(e, 0),
+			i2 = mesh->elemNodeId(e, 1),
+			i3 = mesh->elemNodeId(e, 2);
+		double deltaT = fabs((T[i1] + T[i2] + T[i3]) / 3. - T0);
+		double eps0 = 0.;
+		switch (pc) {
+		case planeCond::stress:
+			eps0 = m.alpha * deltaT;
+			break;
+		case planeCond::strain:
+			eps0 = (1. + m.mu) * m.alpha * deltaT;
+			break;
+		}
+		PlaneElast::eps0[e] = { eps0, eps0, 0. };
+		eps0 *= S[e];
+		double CE[3];
+		for (unsigned i = 0; i < 3; ++i)
+			CE[i] = (C(i, 0) + C(i, 1)) * eps0;
+		StaticMatrix<3, 6>& B = PlaneElast::B[e];
+		double R[6] = {};
+		for (unsigned i = 0; i < 6; ++i)
+			for (unsigned j = 0; j < 3; ++j)
+				R[i] += B(j, i) * CE[j];
+
+		slae.b(2 * i1) += R[0];
+		slae.b(2 * i1 + 1) += R[1];
+		slae.b(2 * i2) += R[2];
+		slae.b(2 * i2 + 1) += R[3];
+		slae.b(2 * i3) += R[4];
+		slae.b(2 * i3 + 1) += R[5];
+	}
+	std::cout << "Temperature strain applied\n";
+}

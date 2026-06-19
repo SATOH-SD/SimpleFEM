@@ -154,12 +154,22 @@ void PlaneElast::calcStress() {
 		strain[e].xy = u1 * Be(2, 0) + v1 * Be(2, 1) + u2 * Be(2, 2) + \
 			v2 * Be(2, 3) + u3 * Be(2, 4) + v3 * Be(2, 5);
 
-		stress[e].xx = C(0, 0) * strain[e].xx + C(0, 1) * strain[e].yy;
-		stress[e].yy = C(0, 1) * strain[e].xx + C(1, 1) * strain[e].yy;
-		stress[e].xy = C(2, 2) * strain[e].xy;
+		if (eps0) {
+			stress[e].xx = C(0, 0) * (strain[e].xx - eps0[e].xx) + C(0, 1) * (strain[e].yy - eps0[e].yy);
+			stress[e].yy = C(0, 1) * (strain[e].xx - eps0[e].xx) + C(1, 1) * (strain[e].yy - eps0[e].yy);
+			stress[e].xy = C(2, 2) * (strain[e].xy - eps0[e].xy);
+		}
+		else {
+			stress[e].xx = C(0, 0) * strain[e].xx + C(0, 1) * strain[e].yy;
+			stress[e].yy = C(0, 1) * strain[e].xx + C(1, 1) * strain[e].yy;
+			stress[e].xy = C(2, 2) * strain[e].xy;
+		}
 
 		intS[e] = stress[e].intensity();
-		intE[e] = intS[e] / m.E;
+		//intE[e] = intS[e] / m.E;
+		Tensor2D eps = strain[e];
+		eps.xy *= 0.5;
+		intE[e] = eps.intensity();
 	}
 	if (nodalStressSaving) {
 		unsigned* links = new unsigned[mesh->nodeCount];
@@ -287,7 +297,7 @@ void PlaneElast::saveAsVtk(const std::string& fileName, bool polarCoords) const 
 		"\nSCALARS NodeID int 1\nLOOKUP_TABLE my_table";
 	for (unsigned i = 0; i < mesh->nodeCount; ++i)
 		file << "\n" << i;
-	file << "\nFIELD FieldData2 " << 1 + nodalStressSaving * 4 + polarCoords * 3 << "\nDisplacement 3 " << mesh->nodeCount << " float\n";
+	file << "\nFIELD FieldData2 " << 1 + nodalStressSaving * 4 + polarCoords * 3 + (T != nullptr) << "\nDisplacement 3 " << mesh->nodeCount << " float\n";
 	for (unsigned i = 0; i < mesh->nodeCount; ++i)
 		file << uv[2 * i] << " " << uv[2 * i + 1] << " 0 ";
 	if (nodalStressSaving) {
@@ -319,7 +329,136 @@ void PlaneElast::saveAsVtk(const std::string& fileName, bool polarCoords) const 
 			delete[] polarTensor;
 		}
 	}
+	if (T != nullptr) {
+		file << "\nFIELD FieldData2 " << 1 << "\nTemperature 1 " << mesh->nodeCount << " float\n";
+		for (unsigned i = 0; i < mesh->nodeCount; ++i)
+			file << T[i] << " ";
+	}
 
+	file.close();
+	t += omp_get_wtime();
+	std::cout << "Solution saved in file " << fileName << " [" << t << " sec]\n";
+}
+
+
+// Сохранить результаты в файл .vtu для визуализации в Paraview
+void PlaneElast::saveAsVtu(const std::string& fileName, bool polarCoords) const {
+	std::cout << "\nSaving...\n";
+	double t = -omp_get_wtime();
+	std::ofstream file(fileName, std::ios_base::out);
+	file << "<?xml version=\"1.0\"?>" \
+		<< "\n<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt64\" >" \
+		<< "\n\t<UnstructuredGrid>" \
+		<< "\n\t\t<Piece NumberOfPoints=\"" << mesh->nodeCount << "\" NumberOfCells=\"" << mesh->elemCount << "\">";
+
+	file << "\n\t\t\t<PointData>";  // Данные в узлах
+	// Номера узлов
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"NodeID\" NumberOfComponents=\"1\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < mesh->nodeCount; ++i)
+		file << i << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	// Перемещения
+	file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Displacement\" NumberOfComponents=\"3\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < mesh->nodeCount; ++i)
+		file << uv[2 * i] << " " << uv[2 * i + 1] << " 0 ";
+	file << "\n\t\t\t\t</DataArray>";
+	if (nodalStressSaving) {
+		file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Nodal Stress" << (polarCoords ? " (Cartesian)" : "") << "\" NumberOfComponents=\"4\" " \
+			<< "ComponentName0=\"XX\" ComponentName1=\"YY\" ComponentName2=\"XY\" ComponentName3=\"Intensity\"" \
+			<< " format=\"ascii\" >\n";
+		for (unsigned i = 0; i < mesh->nodeCount; ++i)
+			file << nodalStress[i].xx << " " << nodalStress[i].yy << " " << nodalStress[i].xy << " " << nodalIntS[i] << " ";
+		file << "\n\t\t\t\t</DataArray>";
+		if (polarCoords) {
+			file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Nodal Stress (Polar)\" NumberOfComponents=\"4\" " \
+				<< "ComponentName0=\"RR\" ComponentName1=\"PhiPhi\" ComponentName2=\"RPhi\" ComponentName3=\"Intensity\"" \
+				<< " format=\"ascii\" >\n";
+			for (unsigned i = 0; i < mesh->nodeCount; ++i) {
+				Tensor2D polarTensor = nodalStress[i].polar(mesh->node[i]);
+				file << polarTensor.xx << " " << polarTensor.yy << " " << polarTensor.xy << " " << nodalIntS[i] << " ";
+			}
+			file << "\n\t\t\t\t</DataArray>";
+		}
+	}
+	if (T != nullptr) {
+		file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Temperature\" NumberOfComponents=\"1\" format=\"ascii\" >\n";
+		for (unsigned i = 0; i < mesh->nodeCount; ++i)
+			file << T[i] << " ";
+		file << "\n\t\t\t\t</DataArray>";
+	}
+	file << "\n\t\t\t</PointData>";
+
+	file << "\n\t\t\t<CellData>";  // Данные в элементах
+	// Номера элементов
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"ElementID\" NumberOfComponents=\"1\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < mesh->elemCount; ++i)
+		file << i << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	// Деформации
+	file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Strain" << (polarCoords ? " (Cartesian)" : "") << "\" NumberOfComponents=\"4\" " \
+		<< "ComponentName0=\"XX\" ComponentName1=\"YY\" ComponentName2=\"XY\" ComponentName3=\"Intensity\"" \
+		<< " format=\"ascii\" >\n";
+	for (unsigned i = 0; i < mesh->elemCount; ++i)
+		file << strain[i].xx << " " << strain[i].yy << " " << 0.5 * strain[i].xy << " " << intE[i] << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	if (polarCoords) {
+		file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Strain (Polar)\" NumberOfComponents=\"4\" " \
+			<< "ComponentName0=\"RR\" ComponentName1=\"PhiPhi\" ComponentName2=\"RPhi\" ComponentName3=\"Intensity\"" \
+			<< " format=\"ascii\" >\n";
+		for (unsigned i = 0; i < mesh->elemCount; ++i) {
+			strain[i].xy *= 0.5;
+			vec2 r = (mesh->elemNode(i, 0) + mesh->elemNode(i, 0) + mesh->elemNode(i, 0)) / 3.;
+			Tensor2D polarTensor = strain[i].polar(r);
+			strain[i].xy *= 2.;
+			file << polarTensor.xx << " " << polarTensor.yy << " " << 0.5 * polarTensor.xy << " " << intE[i] << " ";
+		}
+		file << "\n\t\t\t\t</DataArray>";
+	}
+	// Напряжения
+	file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Stress" << (polarCoords ? " (Cartesian)" : "") << "\" NumberOfComponents=\"4\" " \
+		<< "ComponentName0=\"XX\" ComponentName1=\"YY\" ComponentName2=\"XY\" ComponentName3=\"Intensity\"" \
+		<< " format=\"ascii\" >\n";
+	for (unsigned i = 0; i < mesh->elemCount; ++i)
+		file << stress[i].xx << " " << stress[i].yy << " " << stress[i].xy << " " << intS[i] << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	if (polarCoords) {
+		file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Stress (Polar)\" NumberOfComponents=\"4\" " \
+			<< "ComponentName0=\"RR\" ComponentName1=\"PhiPhi\" ComponentName2=\"RPhi\" ComponentName3=\"Intensity\"" \
+			<< " format=\"ascii\" >\n";
+		for (unsigned i = 0; i < mesh->elemCount; ++i) {
+			vec2 r = (mesh->elemNode(i, 0) + mesh->elemNode(i, 0) + mesh->elemNode(i, 0)) / 3.;
+			Tensor2D polarTensor = stress[i].polar(r);
+			file << polarTensor.xx << " " << polarTensor.yy << " " << 0.5 * polarTensor.xy << " " << intS[i] << " ";
+		}
+		file << "\n\t\t\t\t</DataArray>";
+	}
+	file << "\n\t\t\t</CellData>";
+
+	file << "\n\t\t\t<Points>";  // Узлы
+	file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Points\" NumberOfComponents=\"3\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < mesh->nodeCount; ++i)
+		file << mesh->node[i].x << " " << mesh->node[i].y << " 0 ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t</Points>";
+
+	file << "\n\t\t\t<Cells>";  // Элементы
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"connectivity\" format=\"ascii\" >\n";
+	for (int i = 0; i < mesh->elemCount * 3; ++i)
+		file << mesh->elem3[i] << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"offsets\" format=\"ascii\" >\n";
+	for (int i = 3; i <= mesh->elemCount * 3; i += 3)
+		file << i << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"types\" format=\"ascii\" >\n";
+	for (int i = 0; i < mesh->elemCount; ++i)
+		file << "5 ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t</Cells>";
+
+	file << "\n\t\t</Piece>";
+	file << "\n\t</UnstructuredGrid>";
+	file << "\n</VTKFile>";
 	file.close();
 	t += omp_get_wtime();
 	std::cout << "Solution saved in file " << fileName << " [" << t << " sec]\n";

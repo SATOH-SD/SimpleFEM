@@ -55,6 +55,13 @@ public:
 
 	unsigned* elem3 = nullptr; // Элементы
 
+	unsigned borderCount = 0;
+
+	unsigned* borderOffset = nullptr;
+
+	unsigned* borders = nullptr;
+
+
 	// Конструктор по умолчанию
 	Mesh() = default;
 
@@ -67,28 +74,37 @@ public:
 
 	// Конструктор копирования
 	Mesh(const Mesh& mesh)
-		: nodeCount(mesh.nodeCount), elemCount(mesh.elemCount) {
+		: nodeCount(mesh.nodeCount), elemCount(mesh.elemCount), borderCount(mesh.borderCount) {
 		node = new vec2[nodeCount];
 		elem3 = new unsigned[3 * elemCount];
+		borderOffset = new unsigned[borderCount + 1];
 		memcpy(node, mesh.node, nodeCount * sizeof(vec2));
 		memcpy(elem3, mesh.elem3, 3 * elemCount * sizeof(int));
+
 	}
 
 	// Конструктор перемещения
 	Mesh(Mesh&& mesh) noexcept
-		: nodeCount(mesh.nodeCount), elemCount(mesh.elemCount) {
+		: nodeCount(mesh.nodeCount), elemCount(mesh.elemCount), borderCount(mesh.borderCount) {
 		mesh.nodeCount = 0;
 		mesh.elemCount = 0;
+		mesh.borderCount = 0;
 		node = mesh.node;
 		elem3 = mesh.elem3;
+		borderOffset = mesh.borderOffset;
+		borders = mesh.borders;
 		mesh.node = nullptr;
 		mesh.elem3 = nullptr;
+		mesh.borderOffset = nullptr;
+		mesh.borders = nullptr;
 	}
 
 	// Деструктор
 	~Mesh() {
-		delete[] node;
-		delete[] elem3;
+		delete[] node; node = nullptr;
+		delete[] elem3; elem3 = nullptr;
+		delete[] borderOffset; borderOffset = nullptr;
+		delete[] borders; borders = nullptr;
 	}
 
 	// Обращение к координатам узла элемента
@@ -105,6 +121,11 @@ public:
 	unsigned elemNodeId(unsigned element, unsigned localNode) const {
 		return elem3[3 * element + localNode];
 	}
+
+	unsigned borderLength(unsigned borderId) const {
+		return borderOffset[borderId + 1] - borderOffset[borderId];
+	}
+
 
 	// Найти наибольшую разность номеров узлов в конечном элементе
 	int findMaxIndexDiff() const {
@@ -137,6 +158,10 @@ public:
 	// Сохранить сетку в файл .vtk для визуализации в Paraview
 	void saveAsVtk(const std::string& fileName) const;
 
+	// Сохранить сетку в файл .vtu для визуализации в Paraview
+	void saveAsVtu(const std::string& fileName) const;
+
+	void makeMultiColorSlow();
 	void makeMultiColor();
 
 };

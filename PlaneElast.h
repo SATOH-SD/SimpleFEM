@@ -8,6 +8,7 @@
 #include "StaticMatrix.h"
 #include "StripSLAE.h"
 
+class PlaneHeat;
 
 // Двухмерный тензор
 struct Tensor2D {
@@ -81,6 +82,9 @@ private:
 
 	double* nodalIntS = nullptr;       // Интенсивности напряжений (в узлах)
 	Tensor2D* nodalStress = nullptr;   // Напряжения (в узлах)
+
+	const double* T = nullptr;
+	Tensor2D* eps0 = nullptr;
 	
 	bool meshLoaded = false;           // Загружена ли в класс сетка
 	bool assembled = false;            // Собрана ли матрица жёсткости
@@ -123,6 +127,7 @@ public:
 		delete[] intS;
 		delete[] nodalStress;
 		delete[] nodalIntS;
+		delete[] eps0;
 	}
 
 	// Задать сетку
@@ -140,6 +145,9 @@ public:
 
 	// Сохранить результаты в файл .vtk для визуализации в ParaView
 	void saveAsVtk(const std::string& fileName, bool polarCoords = false) const;
+
+	// Сохранить результаты в файл .vtu для визуализации в ParaView
+	void saveAsVtu(const std::string& fileName, bool polarCoords = false) const;
 
 
 	// Задать перемещения в точке
@@ -178,6 +186,7 @@ public:
 	// Задать вертикальное перемещение на горизонтальной линии
 	bool setHoriLineV(double y, double v = 0.);
 
+
 	// Задать силу в точке
 	bool setPointForce(vec2 point, vec2 force);
 
@@ -199,4 +208,9 @@ public:
 
 	// Задать объёмные силы при вращении вокруг оси
 	void setRotationAxis(vec2 point, vec2 direction, double omega);
+
+
+	bool setTemperature(const PlaneHeat& heat, double T0);
+
+	void setTemperature(const double* T, double T0);
 };

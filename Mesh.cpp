@@ -1,5 +1,7 @@
 ﻿#include "Mesh.h"
 
+#include <iomanip>
+#include <list>
 
 // Сгенерировать сетку в прямоугольной области
 void Mesh::genRectangle(double x1, double x2, double y1, double y2, unsigned nx, unsigned ny) {
@@ -88,11 +90,13 @@ void Mesh::renumByDirection(vec2 direction) {
 
 	renumSort(ranges, ranges + nodeCount, oldNodes, bufferR, bufferN);
 
-	for (int i = 0; i < nodeCount; ++i)
+	for (unsigned i = 0; i < nodeCount; ++i)
 		newNodes[oldNodes[i]] = i;
 
-	for (int i = 0; i < 3 * elemCount; ++i)
+	for (unsigned i = 0; i < 3 * elemCount; ++i)
 		elem3[i] = newNodes[elem3[i]];
+	for (unsigned i = 0; i < borderOffset[borderCount]; ++i)
+		borders[i] = newNodes[borders[i]];
 	vec2* nodes = new vec2[nodeCount];
 	for (size_t i = 0; i < nodeCount; ++i)
 		nodes[newNodes[i]] = node[i];
@@ -122,13 +126,23 @@ bool Mesh::loadFromFile(const std::string& fileName) {
 		return false;
 	}
 
+	delete[] borderOffset;
+	borderOffset = new unsigned[1];
+	borderOffset[0] = 0;
+
+	unsigned maxIndex = 0, input = 0;
 	elemCount = nodeCount = 0;
 	std::string line;
 	while (std::getline(file, line)) {
 		if (line == "*NODE")
 			while (std::getline(file, line)) {
-				if (line.size() != 0 && line[0] != '*')
+				if (line.size() != 0 && line[0] != '*') {
 					++nodeCount;
+					std::istringstream ss(line);
+					ss >> input;
+					if (input > maxIndex)
+						maxIndex = input;
+				}
 				else break;
 			}
 		else if (line.substr(0, 8) == "*ELEMENT") {
@@ -136,7 +150,6 @@ bool Mesh::loadFromFile(const std::string& fileName) {
 			for (int i = 0; i < line.length(); ++i) {
 				if (line.substr(i, 5) == "TYPE=") {
 					i += 5;
-					//std::clog << line.substr(i, 3) << "\n";
 					if (line.substr(i, 3) == "S3R") {
 						while (std::getline(file, line)) {
 							if (line.size() != 0 && line[0] != '*')
@@ -147,23 +160,43 @@ bool Mesh::loadFromFile(const std::string& fileName) {
 				}
 			}
 		}
+		else if (line == "*MPC")
+			for (;;) {
+				++borderCount;
+				unsigned* tempBorderOffset = new unsigned[borderCount + 1];
+				memcpy(tempBorderOffset, borderOffset, borderCount * sizeof(int));
+				std::swap(tempBorderOffset, borderOffset);
+				delete[] tempBorderOffset;
+				borderOffset[borderCount] = borderCount ? borderOffset[borderCount - 1] : 0;
+				while (std::getline(file, line)) {
+					if (line.size() != 0 && line[0] != '*')
+						++borderOffset[borderCount];
+					else break;
+				}
+				if (line != "*MPC") break;
+			}
 	}
+
+	//std::cout << "maxIndex " << maxIndex << "\n";
+
 	file.clear();
 	file.seekg(0);
 	realloc(nodeCount, elemCount);
-	int curElem3 = 0, input = 0;
+	borders = new unsigned[borderOffset[borderCount]];
+	unsigned curNode = 0, curElem3 = 0, curBorder = 0;
+	unsigned* indexes = new unsigned[maxIndex + 1];
+	std::list<unsigned> superNodes;
+
 	while (std::getline(file, line)) {
 		if (line == "*NODE")
 			while (std::getline(file, line)) {
 				if (line.size() != 0 && line[0] != '*') {
 					deleteCommas(line);
-					//std::clog << line << "\n";
 					std::istringstream ss(line);
 					ss >> input;
-					--input;
-					if (input < nodeCount)
-						ss >> node[input].x >> node[input].y;
-					//std::clog << input << " " << node[input].x << " " << node[input].y << "\n";
+					indexes[input] = curNode;
+					ss >> node[curNode].x >> node[curNode].y;
+					++curNode;
 				}
 				else break;
 			}
@@ -181,7 +214,6 @@ bool Mesh::loadFromFile(const std::string& fileName) {
 								int begin = 3 * curElem3;
 								for (int i = 0; i < 3; ++i) {
 									ss >> elem3[begin + i];
-									--elem3[begin + i];
 								}
 								++curElem3;
 							}
@@ -191,7 +223,52 @@ bool Mesh::loadFromFile(const std::string& fileName) {
 				}
 			}
 		}
+		else if (line == "*MPC")
+			for (;;) {
+				unsigned curPoint = 0;
+				unsigned curOffset = borderOffset[curBorder];
+				while (std::getline(file, line)) {
+					if (line.size() != 0 && line[0] != '*') {
+						deleteCommas(line);
+						line[3] = line[2] = line[1] = line[0] = ' ';
+						std::istringstream ss(line);
+						ss >> borders[curOffset + curPoint];
+						if (curPoint == 0) {
+							int super;
+							ss >> super;
+							superNodes.push_back(super);
+						}
+						borders[curOffset + curPoint];
+						++curPoint;
+					}
+					else break;
+				}
+				++curBorder;
+				if (line != "*MPC") break;
+			}
 	}
+
+	for (unsigned i = 0; i < 3 * elemCount; ++i)
+		elem3[i] = indexes[elem3[i]];
+	for (unsigned i = 0; i < borderOffset[borderCount]; ++i)
+		borders[i] = indexes[borders[i]];
+	for (unsigned& super : superNodes)
+		super = indexes[super];
+	for (unsigned super : superNodes) {
+		for (unsigned i = super + 1; i < nodeCount; ++i)
+			node[i - 1] = node[i];
+		--nodeCount;
+		for (unsigned i = 0; i < 3 * elemCount; ++i)
+			if (elem3[i] > super)
+				--elem3[i];
+		for (unsigned i = 0; i < borderOffset[borderCount]; ++i)
+			if (borders[i] > super)
+				--borders[i];
+		for (unsigned& rest : superNodes)
+			if (rest > super)
+				--rest;
+	}
+
 	file.close();
 	colored = false;
 	std::cout << "Mesh loaded:\n";
@@ -201,6 +278,8 @@ bool Mesh::loadFromFile(const std::string& fileName) {
 
 // Сохранить сетку в файл .vtk для визуализации в Paraview
 void Mesh::saveAsVtk(const std::string& fileName) const {
+	std::cout << "\nSaving...\n";
+	double t = -omp_get_wtime();
 	std::ofstream file(fileName, std::ios_base::out);
 	file << "# vtk DataFile Version 2.0\n";
 	file << "Mesh\n";
@@ -231,11 +310,133 @@ void Mesh::saveAsVtk(const std::string& fileName) const {
 		"\nSCALARS NodeID int 1\nLOOKUP_TABLE my_table";
 	for (size_t i = 0; i < nodeCount; ++i)
 		file << "\n" << i;
+	file.close();
+	t += omp_get_wtime();
+	std::cout << "Mesh saved in file " << fileName << " [" << t << " sec]\n";
 }
 
 
-void Mesh::makeMultiColor() {
-	std::cout << "Mesh coloring...\n";
+// Сохранить сетку в файл .vtu для визуализации в Paraview
+void Mesh::saveAsVtu(const std::string& fileName) const {
+	std::cout << "\nSaving...\n";
+	double t = -omp_get_wtime();
+	std::ofstream file(fileName, std::ios_base::out);
+	file << "<?xml version=\"1.0\"?>" \
+		<< "\n<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt64\" >" \
+		<< "\n\t<UnstructuredGrid>" \
+		<< "\n\t\t<Piece NumberOfPoints=\"" << nodeCount << "\" NumberOfCells=\"" << elemCount << "\">";
+	
+	file << "\n\t\t\t<PointData>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"NodeID\" NumberOfComponents=\"1\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < nodeCount; ++i)
+		file << i << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t</PointData>";
+	
+	file << "\n\t\t\t<CellData>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"ElementID\" NumberOfComponents=\"1\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < elemCount; ++i)
+		file << i << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t</CellData>";
+
+	file << "\n\t\t\t<Points>";
+	file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Points\" NumberOfComponents=\"3\" format=\"ascii\" >\n";
+	for (unsigned i = 0; i < nodeCount; ++i)
+		file << node[i].x << " " << node[i].y << " 0 ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t</Points>";
+
+	file << "\n\t\t\t<Cells>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"connectivity\" format=\"ascii\" >\n";
+	for (int i = 0; i < elemCount * 3; ++i)
+		file << elem3[i] << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"offsets\" format=\"ascii\" >\n";
+	for (int i = 3; i <= elemCount * 3; i += 3)
+		file << i << " ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"types\" format=\"ascii\" >\n";
+	for (int i = 0; i < elemCount; ++i)
+		file << "5 ";
+	file << "\n\t\t\t\t</DataArray>";
+	file << "\n\t\t\t</Cells>";
+
+	file << "\n\t\t</Piece>";
+	file << "\n\t</UnstructuredGrid>";
+	file << "\n</VTKFile>";
+	file.close();
+	t += omp_get_wtime();
+	std::cout << "Mesh saved in file " << fileName << " [" << t << " sec]\n";
+}
+
+
+// Сохранить сетку в файл .vtu для визуализации в Paraview
+//void Mesh::saveAsVtu_(const std::string& fileName) const {
+//	std::ofstream file(fileName, std::ios_base::out);
+//	size_t offset = 0;
+//	file << "<?xml version=\"1.0\"?>" \
+//		<< "\n<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt64\" >" \
+//		<< "\n\t<UnstructuredGrid>" \
+//		<< "\n\t\t<Piece NumberOfPoints=\"" << nodeCount << "\" NumberOfCells=\"" << elemCount << "\">";
+//
+//	file << "\n\t\t\t<PointData>";
+//	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"NodeID\" NumberOfComponents=\"1\" format=\"appended\" offset=\"" \
+//		<< offset << "\" />\n";
+//	offset += nodeCount;
+//	file << "\n\t\t\t</PointData>";
+//
+//	file << "\n\t\t\t<CellData>";
+//	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"ElementID\" NumberOfComponents=\"1\" format=\"appended\" offset=\"" \
+//		<< offset << "\" />\n";
+//	offset += elemCount;
+//	file << "\n\t\t\t</CellData>";
+//
+//	file << "\n\t\t\t<Points>";
+//	file << "\n\t\t\t\t<DataArray type=\"Float64\" Name=\"Points\" NumberOfComponents=\"3\" format=\"appended\" offset=\"" \
+//		<< offset << "\" />\n";
+//	offset += nodeCount * 3;
+//	file << "\n\t\t\t</Points>";
+//
+//	file << "\n\t\t\t<Cells>";
+//	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"connectivity\" format=\"appended\" offset=\"" \
+//		<< offset << "\" />\n";
+//	offset += elemCount * 3;
+//	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"offsets\" format=\"appended\" offset=\"" \
+//		<< offset << "\" />\n";
+//	offset += elemCount;
+//	file << "\n\t\t\t\t<DataArray type=\"UInt32\" Name=\"types\" format=\"appended\" offset=\"" \
+//		<< offset << "\" />\n";
+//	offset += elemCount;
+//	file << "\n\t\t\t</Cells>";
+//
+//	file << "\n\t\t</Piece>";
+//	file << "\n\t</UnstructuredGrid>";
+//
+//	file << "\n\t<AppendedData encoding=\"raw\">\n_";
+//	double zero = 0;
+//	for (unsigned i = 0; i < nodeCount; ++i)
+//		file << reinterpret_cast<const char*>(&i);
+//	for (unsigned i = 0; i < elemCount; ++i)
+//		file << reinterpret_cast<const char*>(&i);
+//	for (unsigned i = 0; i < nodeCount; ++i)
+//		file << reinterpret_cast<const char*>(&node[i].x) << reinterpret_cast<const char*>(&node[i].y) << reinterpret_cast<const char*>(&zero);
+//	for (int i = 0; i < elemCount * 3; ++i)
+//		file << reinterpret_cast<const char*>(&elem3[i]);
+//	for (int i = 3; i <= elemCount * 3; i += 3)
+//		file << reinterpret_cast<const char*>(&i);
+//	unsigned type = 5;
+//	for (int i = 0; i < elemCount; ++i)
+//		file << reinterpret_cast<const char*>(&type);
+//
+//	file << "\n\t</AppendedData>";
+//	file << "\n</VTKFile>";
+//	file.close();
+//}
+
+
+void Mesh::makeMultiColorSlow() {
+	std::cout << "Mesh coloring... (slow)\n";
 	double t = -omp_get_wtime();
 
 	delete[] elemColor;
@@ -264,6 +465,75 @@ void Mesh::makeMultiColor() {
 			++colorCount;
 		elemColor[i] = newColor;
 	}
+
+	t += omp_get_wtime();
+	std::cout << "Colored [" << t << " sec]\n\n";
+	colored = true;
+}
+
+
+void Mesh::makeMultiColor() {
+	std::cout << "Mesh coloring...\n";
+	double t = -omp_get_wtime();
+
+	delete[] elemColor;
+	elemColor = new char[elemCount];
+	memset(elemColor, 0, elemCount * sizeof(char));
+
+	char colorCount = 1;
+	elemColor[0] = 1;
+
+	char* nodeInCount = new char[nodeCount];
+	memset(nodeInCount, 0, nodeCount * sizeof(char));
+	
+	for (unsigned i = 0; i < elemCount; ++i)
+		for (unsigned ni = 0; ni < 3; ++ni)
+			++nodeInCount[elemNodeId(i, ni)];
+
+	unsigned dataWidth = 0;
+	for (unsigned i = 0; i < nodeCount; ++i) {
+		unsigned count = nodeInCount[i];
+		if (count > dataWidth)
+			dataWidth = count;
+	}
+	std::cout << "dataWidth = " << dataWidth << "\n";
+
+	unsigned* nodeInElems = new unsigned[nodeCount * dataWidth];
+	memset(nodeInCount, 0, nodeCount * sizeof(char));
+
+	for (unsigned i = 0; i < elemCount; ++i) {
+		bool colors[10] = {};
+		for (unsigned ni = 0; ni < 3; ++ni) {
+			unsigned nodeId = elemNodeId(i, ni);
+			for (unsigned j = 0; j < nodeInCount[nodeId]; ++j)
+				colors[elemColor[nodeInElems[nodeId * dataWidth + j]]] = true;
+			nodeInElems[nodeId * dataWidth + nodeInCount[nodeId]] = i;
+			++nodeInCount[nodeId];
+		}
+		char newColor = 1;
+		for (; newColor <= colorCount; ++newColor)
+			if (!colors[newColor])
+				break;
+		if (newColor > colorCount)
+			++colorCount;
+		elemColor[i] = newColor;
+	}
+
+	std::cout << "colorCount = " << (int)colorCount << "\n";
+
+	/*for (unsigned i = 0; i < elemCount; ++i)
+		std::cout << i << " " << (int)elemColor[i] << "\n";*/
+
+	delete[] nodeInCount;
+	delete[] nodeInElems;
+
+	unsigned* colorCounts = new unsigned[colorCount + 1];
+	memset(colorCounts, 0, (colorCount + 1) * sizeof(unsigned));
+	for (unsigned i = 0; i < elemCount; ++i)
+		++colorCounts[elemColor[i]];
+	for (unsigned i = 1; i <= colorCount; ++i)
+		std::cout << i << ": " << colorCounts[i] << "\n";
+	delete[] colorCounts;
 
 	t += omp_get_wtime();
 	std::cout << "Colored [" << t << " sec]\n\n";
